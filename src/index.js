@@ -30,8 +30,6 @@ export default {
         return handleStats(request, env);
       case '/health':
         return Response.json({ status: 'ok' });
-      case '/__probe':
-        return handleProbe(request);
       default:
         return new Response('Not Found', { status: 404 });
     }
@@ -193,30 +191,5 @@ async function handleStats(request, env) {
     versions: versions.results,
     countries: countries.results,
     models: models.results,
-  });
-}
-
-function handleProbe(request) {
-  const cf = request.cf || null;
-  return Response.json({
-    cf_present: cf !== null,
-    keys: cf ? Object.keys(cf).sort() : [],
-    values: cf
-      ? {
-          country: cf.country ?? null,
-          city: cf.city ?? null,
-          region: cf.region ?? null,
-          regionCode: cf.regionCode ?? null,
-          postalCode: cf.postalCode ?? null,
-          latitude: cf.latitude ?? null,
-          longitude: cf.longitude ?? null,
-          timezone: cf.timezone ?? null,
-          colo: cf.colo ?? null,
-          continent: cf.continent ?? null,
-          asn: cf.asn ?? null,
-          asOrganization: cf.asOrganization ?? null,
-        }
-      : null,
-    cf_ipcountry_header: request.headers.get('CF-IPCountry'),
   });
 }
