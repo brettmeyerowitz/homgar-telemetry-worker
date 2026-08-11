@@ -73,6 +73,51 @@ async function handlePing(request, env) {
     ).bind(anonId, day, integrationVersion, hassVersion),
   ]);
 
+  const month = day.slice(0, 7);
+
+  // Atomically claim this month for this install. The UPDATE only matches when
+  // the month has not been claimed, so meta.changes === 1 means we won and are
+  // the one caller allowed to increment the aggregates. This avoids the
+  // read-then-write race a SELECT-based check would have.
+  const claim = await env.TELEMETRY_DB.prepare(
+    `UPDATE installs SET last_counted_month = ?2
+      WHERE anon_id = ?1
+        AND (last_counted_month IS NULL OR last_counted_month <> ?2)`
+  ).bind(anonId, month).run();
+
+  if (claim.meta.changes === 1) {
+    const aggregates = [];
+
+    if (body.share_country === true) {
+      // The ONLY read of request.cf in this file.
+      const country = request.cf?.country ?? null;
+      if (country) {
+        aggregates.push(
+          env.TELEMETRY_DB.prepare(
+            `INSERT INTO country_counts (country, month, count) VALUES (?1, ?2, 1)
+             ON CONFLICT(country, month) DO UPDATE SET count = count + 1`
+          ).bind(String(country).slice(0, 2), month)
+        );
+      }
+    }
+
+    if (body.share_models === true && Array.isArray(body.models)) {
+      const models = [...new Set(body.models.filter(m => typeof m === 'string'))]
+        .slice(0, 50)                       // bound a hostile payload
+        .map(m => m.slice(0, 64));
+      for (const model of models) {
+        aggregates.push(
+          env.TELEMETRY_DB.prepare(
+            `INSERT INTO model_counts (model, month, count) VALUES (?1, ?2, 1)
+             ON CONFLICT(model, month) DO UPDATE SET count = count + 1`
+          ).bind(model, month)
+        );
+      }
+    }
+
+    if (aggregates.length) await env.TELEMETRY_DB.batch(aggregates);
+  }
+
   return new Response(null, { status: 204 });
 }
 

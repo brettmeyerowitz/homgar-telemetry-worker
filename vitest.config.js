@@ -7,6 +7,12 @@ import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config';
 // to the test worker as a binding.
 const schemaSql = readFileSync('./schema.sql', 'utf8');
 
+// Likewise, the privacy regression guard needs to inspect the worker's own
+// source for forbidden cf field references, but the sandbox's node:fs can't
+// reach the project tree either — so the source is read here and handed in
+// as a binding too.
+const workerSrc = readFileSync('./src/index.js', 'utf8');
+
 export default defineWorkersConfig({
   test: {
     poolOptions: {
@@ -14,7 +20,7 @@ export default defineWorkersConfig({
         wrangler: { configPath: './wrangler.toml' },
         miniflare: {
           d1Databases: ['TELEMETRY_DB'],
-          bindings: { TEST_SCHEMA_SQL: schemaSql },
+          bindings: { TEST_SCHEMA_SQL: schemaSql, TEST_WORKER_SRC: workerSrc },
         },
       },
     },
