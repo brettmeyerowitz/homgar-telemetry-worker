@@ -11,3 +11,6 @@ enabled = false
 binding = "TELEMETRY_DB"
 database_name = "homgar-telemetry"
 database_id = "490d05e8-9fe0-4314-a3c6-007c2c21470d"
+
+[triggers]
+crons = ["17 3 * * *"]

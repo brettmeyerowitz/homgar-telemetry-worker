@@ -36,7 +36,28 @@ export default {
         return new Response('Not Found', { status: 404 });
     }
   },
+
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(purge(env));
+  },
 };
+
+const PING_RETENTION_DAYS = 395;    // 13 months, keeps year-on-year comparison
+const INSTALL_RETENTION_DAYS = 90;
+
+/**
+ * Delete aged rows. Aggregate tables are deliberately never purged — they hold
+ * no per-install data, and the historical series is the point.
+ */
+export async function purge(env, now = new Date()) {
+  const pingCutoff    = isoDay(new Date(now.getTime() - PING_RETENTION_DAYS * 86400_000));
+  const installCutoff = isoDay(new Date(now.getTime() - INSTALL_RETENTION_DAYS * 86400_000));
+
+  await env.TELEMETRY_DB.batch([
+    env.TELEMETRY_DB.prepare(`DELETE FROM pings WHERE day < ?1`).bind(pingCutoff),
+    env.TELEMETRY_DB.prepare(`DELETE FROM installs WHERE last_seen < ?1`).bind(installCutoff),
+  ]);
+}
 
 async function handlePing(request, env) {
   if (request.method !== 'POST') {
