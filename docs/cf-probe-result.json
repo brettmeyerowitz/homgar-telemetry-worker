@@ -1,0 +1,53 @@
+{
+  "_comment": [
+    "Recorded 2026-08-11 from the deployed worker's temporary /__probe route.",
+    "PURPOSE: establish which request.cf fields the deployed Cloudflare edge",
+    "actually populates. This could not be answered locally — wrangler dev does",
+    "not populate request.cf at all.",
+    "",
+    "VALUES ARE REDACTED ON PURPOSE. The raw response contained the maintainer's",
+    "own approximate home location (postal code, latitude and longitude to five",
+    "decimal places). Publishing that in the repo whose entire subject is not",
+    "collecting location data would be self-defeating. What matters here is which",
+    "fields are POPULATED, not what they said."
+  ],
+  "cf_present": true,
+  "keys": [
+    "asOrganization", "asn", "city", "clientQuicRtt", "clientTcpRtt", "colo",
+    "continent", "country", "edgeL4", "edgeRequestKeepAliveStatus",
+    "httpProtocol", "isEUCountry", "latitude", "longitude", "postalCode",
+    "region", "regionCode", "requestHeaderNames", "requestPriority", "timezone",
+    "tlsCipher", "tlsClientAuth", "tlsClientCiphersSha1",
+    "tlsClientExtensionsSha1", "tlsClientExtensionsSha1Le",
+    "tlsClientHelloLength", "tlsClientRandom", "tlsExportedAuthenticator",
+    "tlsVersion", "verifiedBotCategory"
+  ],
+  "geo_fields_populated": {
+    "country": "POPULATED (2-letter code)",
+    "city": "POPULATED (city name)",
+    "region": "POPULATED (province/state name)",
+    "regionCode": "POPULATED (2-letter subdivision code)",
+    "postalCode": "POPULATED (full postal code)",
+    "latitude": "POPULATED (5 decimal places)",
+    "longitude": "POPULATED (5 decimal places)",
+    "timezone": "POPULATED (IANA zone)",
+    "colo": "POPULATED (3-letter datacenter code)",
+    "continent": "POPULATED (2-letter code)",
+    "asn": "POPULATED (integer)",
+    "asOrganization": "POPULATED (ISP name)"
+  },
+  "cf_ipcountry_header": "POPULATED (2-letter code, same as cf.country)",
+  "conclusion": [
+    "Every geolocation field documented by Cloudflare is populated on the",
+    "deployed edge, on the Workers free plan. The CF-IPCountry header is present",
+    "in addition to the request.cf object.",
+    "",
+    "Note colo was a DIFFERENT city from the city field — it is the nearest",
+    "datacenter, not the visitor's location, so it is coarser but still a",
+    "location signal.",
+    "",
+    "This confirms the spec's field table was correct, and that a local",
+    "wrangler dev session showing only CF-IPCountry reflects local-mode",
+    "behaviour rather than a plan limitation."
+  ]
+}
