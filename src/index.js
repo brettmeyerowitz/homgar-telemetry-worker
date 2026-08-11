@@ -26,6 +26,10 @@ export default {
     switch (url.pathname) {
       case '/ping':
         return handlePing(request, env);
+      case '/stats':
+        return handleStats(request, env);
+      case '/health':
+        return Response.json({ status: 'ok' });
       case '/__probe':
         return handleProbe(request);
       default:
@@ -119,6 +123,56 @@ async function handlePing(request, env) {
   }
 
   return new Response(null, { status: 204 });
+}
+
+/** Constant-time string compare, so token checking does not leak length/prefix. */
+function safeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) {
+    return false;
+  }
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+async function handleStats(request, env) {
+  const provided = (request.headers.get('Authorization') || '').replace(/^Bearer /, '');
+  if (!env.STATS_TOKEN || !safeEqual(provided, env.STATS_TOKEN)) {
+    return new Response('Unauthorized', { status: 401 });
+  }
+
+  const since = isoDay(new Date(Date.now() - 30 * 86400_000));
+
+  const [active, growth, versions, countries, models] = await env.TELEMETRY_DB.batch([
+    env.TELEMETRY_DB.prepare(
+      `SELECT COUNT(DISTINCT anon_id) AS n FROM pings WHERE day >= ?1`
+    ).bind(since),
+    env.TELEMETRY_DB.prepare(
+      `SELECT day, COUNT(DISTINCT anon_id) AS installs
+         FROM pings WHERE day >= ?1 GROUP BY day ORDER BY day`
+    ).bind(since),
+    env.TELEMETRY_DB.prepare(
+      `SELECT integration_version, hass_version, COUNT(*) AS installs
+         FROM pings WHERE day >= ?1
+        GROUP BY integration_version, hass_version
+        ORDER BY installs DESC`
+    ).bind(since),
+    env.TELEMETRY_DB.prepare(
+      `SELECT country, month, count FROM country_counts ORDER BY month DESC, count DESC`
+    ),
+    env.TELEMETRY_DB.prepare(
+      `SELECT model, month, count FROM model_counts ORDER BY month DESC, count DESC`
+    ),
+  ]);
+
+  // Note: no query here selects anon_id. Aggregates only.
+  return Response.json({
+    active_installs: active.results[0]?.n ?? 0,
+    growth: growth.results,
+    versions: versions.results,
+    countries: countries.results,
+    models: models.results,
+  });
 }
 
 function handleProbe(request) {

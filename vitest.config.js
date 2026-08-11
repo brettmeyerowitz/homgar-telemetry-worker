@@ -20,7 +20,15 @@ export default defineWorkersConfig({
         wrangler: { configPath: './wrangler.toml' },
         miniflare: {
           d1Databases: ['TELEMETRY_DB'],
-          bindings: { TEST_SCHEMA_SQL: schemaSql, TEST_WORKER_SRC: workerSrc },
+          bindings: {
+            TEST_SCHEMA_SQL: schemaSql,
+            TEST_WORKER_SRC: workerSrc,
+            // Mutating env.STATS_TOKEN inside a test's beforeAll does not
+            // propagate to the isolated Worker runtime with the installed
+            // vitest-pool-workers version, so the test token is injected
+            // here as a real miniflare binding instead.
+            STATS_TOKEN: 'test-stats-token',
+          },
         },
       },
     },
