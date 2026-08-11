@@ -35,6 +35,11 @@ describe('GET /stats', () => {
     expect((await stats({ Authorization: 'Bearer nope' })).status).toBe(401);
   });
 
+  it('accepts the Bearer scheme case-insensitively', async () => {
+    const res = await stats({ Authorization: `bearer ${TOKEN}` });
+    expect(res.status).toBe(200);
+  });
+
   it('returns aggregates with a valid token', async () => {
     await SELF.fetch('https://example.com/ping', {
       method: 'POST',
@@ -53,6 +58,35 @@ describe('GET /stats', () => {
     expect(body.countries).toEqual(expect.arrayContaining([
       expect.objectContaining({ country: 'ZA', count: 1 }),
     ]));
+  });
+
+  it('counts distinct installs per version, not ping rows (I6)', async () => {
+    // Same install pings on two different days within the 30-day window:
+    // one install, two ping rows for it. `versions[].installs` must report
+    // 1, not 2, or a long-lived install would be weighted like many
+    // short-lived ones.
+    const today = new Date();
+    const yesterday = new Date(today.getTime() - 86400_000);
+    const todayStr = today.toISOString().slice(0, 10);
+    const yesterdayStr = yesterday.toISOString().slice(0, 10);
+
+    await env.TELEMETRY_DB.batch([
+      env.TELEMETRY_DB.prepare(
+        `INSERT INTO installs (anon_id, first_seen, last_seen) VALUES (?1, ?2, ?3)`
+      ).bind(ID, yesterdayStr, todayStr),
+      env.TELEMETRY_DB.prepare(
+        `INSERT INTO pings (anon_id, day, integration_version, hass_version) VALUES (?1, ?2, '3.0.44', '2026.8.1')`
+      ).bind(ID, yesterdayStr),
+      env.TELEMETRY_DB.prepare(
+        `INSERT INTO pings (anon_id, day, integration_version, hass_version) VALUES (?1, ?2, '3.0.44', '2026.8.1')`
+      ).bind(ID, todayStr),
+    ]);
+
+    const res = await stats({ Authorization: `Bearer ${TOKEN}` });
+    const body = await res.json();
+    expect(body.versions).toEqual([
+      { integration_version: '3.0.44', hass_version: '2026.8.1', installs: 1 },
+    ]);
   });
 
   it('never exposes an anon_id', async () => {

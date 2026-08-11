@@ -88,4 +88,41 @@ describe('POST /ping', () => {
     const res = await SELF.fetch('https://example.com/ping', { method: 'GET' });
     expect(res.status).toBe(405);
   });
+
+  it('rejects a body that parses to null instead of an object', async () => {
+    // `curl -d 'null'` is valid JSON, so request.json() succeeds and returns
+    // the value `null`. Without an explicit object check, `body.anon_id`
+    // would throw on that null and fall through to an uncaught 500.
+    const res = await SELF.fetch('https://example.com/ping', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: 'null',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a body that parses to a JSON array instead of an object', async () => {
+    const res = await SELF.fetch('https://example.com/ping', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '[1, 2, 3]',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a body over the 8192-byte cap with 413, before parsing it', async () => {
+    // fetch() computes Content-Length itself from this body, so this
+    // exercises the real header the handler checks rather than a forged one.
+    const res = await SELF.fetch('https://example.com/ping', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...BASE, padding: 'x'.repeat(20000) }),
+    });
+    expect(res.status).toBe(413);
+  });
+
+  it('accepts a body at or under the 8192-byte cap', async () => {
+    const res = await ping(BASE);
+    expect(res.status).toBe(204);
+  });
 });

@@ -18,6 +18,7 @@ const FULL_CF = {
   continent: 'LEAKED_CONTINENT',
   asn: 99999,
   asOrganization: 'LEAKED_ASORG',
+  isEUCountry: 'LEAKED_EU_FLAG',
 };
 
 beforeAll(async () => {
@@ -66,7 +67,7 @@ describe('no geo field but country is ever read', () => {
     for (const marker of [
       'LEAKED_CITY', 'LEAKED_REGION', 'LEAKED_RC', 'LEAKED_POSTAL',
       'LEAKED_TZ', 'LEAKED_COLO', 'LEAKED_CONTINENT', 'LEAKED_ASORG',
-      '-33.92500', '18.42410', '99999',
+      'LEAKED_EU_FLAG', '-33.92500', '18.42410', '99999',
     ]) {
       expect(dump).not.toContain(marker);
     }
@@ -91,16 +92,49 @@ describe('no geo field but country is ever read', () => {
   });
 });
 
+// Forbidden request.cf properties: every geolocation/location-adjacent field
+// except `country`, which is the one field this worker is allowed to read.
+const FORBIDDEN_CF_PROPS = [
+  'city', 'region', 'regionCode', 'postalCode', 'latitude', 'longitude',
+  'timezone', 'colo', 'continent', 'asn', 'asOrganization', 'isEUCountry',
+];
+
 describe('source-level guard', () => {
-  it('never references a forbidden cf field', () => {
+  it('never references a forbidden cf field, in any of the ways JS can spell one', () => {
     const src = env.TEST_WORKER_SRC;
-    for (const field of [
-      'cf.city', 'cf.region', 'cf.regionCode', 'cf.postalCode',
-      'cf.latitude', 'cf.longitude', 'cf.timezone', 'cf.colo',
-      'cf.continent', 'cf.asn', 'cf.asOrganization',
-      'CF-Connecting-IP',
-    ]) {
-      expect(src).not.toContain(field);
+
+    // Dot-access, with or without optional chaining: cf.city / cf?.city,
+    // and arbitrary whitespace around the dot/`?`, e.g. `cf . city`. A
+    // literal `cf.city` string match (the previous version of this guard)
+    // would miss `cf?.city`, which is exactly the form the real code uses
+    // for its one permitted field (`request.cf?.country`).
+    const dotAccessRe = new RegExp(
+      `\\bcf\\s*\\??\\s*\\.\\s*(${FORBIDDEN_CF_PROPS.join('|')})\\b`
+    );
+    expect(dotAccessRe.test(src)).toBe(false);
+
+    // Bracket access: cf['city'] / cf["city"], which a plain `cf.city`
+    // substring match would also miss entirely.
+    for (const prop of FORBIDDEN_CF_PROPS) {
+      expect(src).not.toContain(`cf['${prop}']`);
+      expect(src).not.toContain(`cf["${prop}"]`);
     }
+
+    // Header-based equivalents of the same signals: the raw client IP, and
+    // the country header (which duplicates cf.country but must still only
+    // be read through the one sanctioned cf.country path, not a header).
+    for (const header of ['CF-Connecting-IP', 'CF-IPCountry']) {
+      expect(src).not.toContain(header);
+    }
+  });
+});
+
+describe('operational config', () => {
+  it('keeps observability disabled in wrangler.toml', () => {
+    expect(env.TEST_WRANGLER_TOML).toMatch(/\[observability\][^[]*enabled\s*=\s*false/);
+  });
+
+  it('never logs via console.* anywhere in the worker source', () => {
+    expect(env.TEST_WORKER_SRC).not.toMatch(/console\s*\./);
   });
 });

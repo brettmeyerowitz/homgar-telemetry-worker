@@ -21,10 +21,14 @@ not analytics, it is not crash reporting, and it does not identify you.
 
 Each opted-in install generates a random UUID (`anon_id`) on first run and
 sends a small ping — integration version, Home Assistant version, and
-(only if you separately opt into each) your country and device models. That
-UUID is not tied to your HomGar account, your Home Assistant instance name,
-or anything else identifying. It exists purely so the worker can tell "one
-install pinged 40 times" from "40 installs pinged once."
+(only if you separately opt into each) a flag asking the worker to record
+your country and/or your device models. The client never sends a country
+itself: Cloudflare's edge derives it from your IP address before our code
+runs, and the worker reads it off `request.cf.country` — see section 3 for
+exactly what that means. That UUID is not tied to your HomGar account, your
+Home Assistant instance name, or anything else identifying. It exists purely
+so the worker can tell "one install pinged 40 times" from "40 installs
+pinged once."
 
 ## 2. Exactly what is stored
 
@@ -90,12 +94,31 @@ In plain English, table by table:
 **Country and device models are stored only as these monthly aggregate
 counts.** Each opted-in install increments its country's and its models'
 counters at most once per calendar month (the `last_counted_month` gate in
-`installs`), and the increment happens in the same D1 batch that never
-writes `anon_id` into `country_counts` or `model_counts`. There is no column,
-join key, or index anywhere in this schema that could connect a country or
-model count back to a specific install. This isn't a policy promise layered
-on top of a system that could technically do otherwise — the schema makes it
-structurally impossible.
+`installs`), and the increment happens in a D1 batch that never writes
+`anon_id` into `country_counts` or `model_counts`. There is no column, join
+key, or index anywhere in this schema that could look up which install
+caused a given aggregate count — `country_counts` and `model_counts` simply
+don't carry an identifier to look up.
+
+That is a real, meaningful limit, but it's not the same as "impossible to
+ever connect the two," so we won't claim that. `installs.last_counted_month`
+does record *which month* an install was last counted in — that column has
+to exist for the monthly-cap logic to work at all, and it's written in the
+same request that increments the aggregate tables. Someone who could observe
+or snapshot the database over time (not just query it once) could correlate
+those writes: an install whose `last_counted_month` just flipped to `2026-08`
+pinged in a request that also incremented some row in `country_counts` for
+`2026-08`. With a large, steady user base that correlation narrows down to
+very little — plenty of installs share any given month. With a user base
+this small (roughly 100-150 installs), it narrows down to more: a country
+counted only once or twice in a given month has few installs left it could
+have been, and cross-referencing which install's `last_counted_month`
+changed in that same window narrows it further still. This isn't a gap
+anyone can exploit through the public API — `/stats` never returns
+`anon_id` or `last_counted_month`, and the aggregate tables never carry an
+identifier — but it does mean the schema reduces linkability rather than
+mathematically ruling it out, and we'd rather say that plainly than overstate
+it.
 
 ## 3. What Cloudflare sees before our code runs
 
@@ -105,8 +128,10 @@ section is deliberately the most exhaustive one here, because it's the part
 that is easiest to gloss over.
 
 We probed the deployed worker (Workers **free plan**) directly and recorded
-every field Cloudflare made available on `request.cf`. The full field list
-Cloudflare populated:
+every key Cloudflare made available on `request.cf`: **30 keys**, all
+populated. This table is meant to be exhaustive — every key from that probe
+is listed below, either on its own row or inside the grouped TLS-fingerprint
+row near the bottom:
 
 | Field | Populated? | Notes |
 |---|---|---|
@@ -120,11 +145,22 @@ Cloudflare populated:
 | `timezone` | Yes | IANA timezone name. |
 | `colo` | Yes | The nearest Cloudflare datacenter — **not** your location. In our probe it named a different city than `city` did. Coarser than the geolocation fields, but still a location signal, which is exactly why it's never read. |
 | `continent` | Yes | 2-letter code. |
+| `isEUCountry` | Yes | Whether the request originated in an EU country — a coarser location signal than `country`, but a location signal. |
 | `asn` | Yes | Your network's autonomous system number. |
 | `asOrganization` | Yes | Your ISP's name. |
+| `clientTcpRtt` | Yes | Round-trip time of the client's TCP connection to the edge — a rough network-distance signal. |
+| `clientQuicRtt` | Yes | Same idea as `clientTcpRtt`, for QUIC connections. |
+| `edgeL4` | Yes | Layer-4 connection metadata for the edge connection. |
+| `edgeRequestKeepAliveStatus` | Yes | Whether the edge kept the connection alive for this request. |
+| `httpProtocol` | Yes | The HTTP protocol version used (e.g. `HTTP/2`). |
+| `requestHeaderNames` | Yes | The *names* (not values) of headers on the incoming request — a fingerprinting-adjacent signal, since header ordering/presence varies by client. |
+| `requestPriority` | Yes | HTTP priority signal from the client, if sent. |
+| `verifiedBotCategory` | Yes | Cloudflare's classification of the requester as a known bot category, if any. |
+| `tlsCipher`, `tlsClientAuth`, `tlsClientCiphersSha1`, `tlsClientExtensionsSha1`, `tlsClientExtensionsSha1Le`, `tlsClientHelloLength`, `tlsClientRandom`, `tlsExportedAuthenticator`, `tlsVersion` | Yes (all 9) | TLS handshake / client-fingerprinting fields, grouped here since none of them are read and none are location signals on their own. `tlsClientRandom` in particular is unique per connection. |
 | `CF-IPCountry` header | Yes | Same 2-letter country code as `cf.country`, exposed as a plain request header rather than on `request.cf`. |
 
-A redacted copy of the raw probe result — with the maintainer's own
+That's 30 `request.cf` keys plus the `CF-IPCountry` header. A redacted copy
+of the raw probe result — with the maintainer's own
 coordinates and postal code stripped out, since publishing them in a repo
 about *not* collecting location data would rather defeat the point — lives
 at [`docs/cf-probe-result.json`](docs/cf-probe-result.json).
@@ -146,12 +182,16 @@ configuration required.
 Of everything in the table above, **exactly one field — `country` — is ever
 read by this worker's code**, and only when the ping payload explicitly sets
 `share_country: true`. Every other field, including the more precise
-`latitude`/`longitude` and the coarser-but-still-informative `colo`, is never
-referenced anywhere in this codebase. A test (`test/privacy.test.js`) asserts
-this at the source level: the test suite fails if the string `cf.city`,
-`cf.colo`, `cf.latitude`, or any other forbidden field ever appears in
-`src/index.js`, and separately proves that a ping sent with every field
-populated stores nothing but the country code, and only when opted in.
+`latitude`/`longitude` and the coarser-but-still-informative `colo` and
+`isEUCountry`, is never referenced anywhere in this codebase. A test
+(`test/privacy.test.js`) asserts this at the source level: it scans
+`src/index.js` with a regex that matches `cf.city`, `cf?.city` (optional
+chaining, the form the real `country` read actually uses), and bracket
+access like `cf['city']`, for every forbidden field — not just a literal
+string search, which a differently-spelled reference could slip past — plus
+a check that `CF-Connecting-IP` and `CF-IPCountry` never appear as header
+names. It separately proves that a ping sent with every field populated
+stores nothing but the country code, and only when opted in.
 
 ## 4. Verify it yourself, on someone else's site
 

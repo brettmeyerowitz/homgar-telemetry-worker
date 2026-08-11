@@ -1,7 +1,6 @@
 name = "homgar-telemetry-worker"
 main = "src/index.js"
 compatibility_date = "2026-08-11"
-compatibility_flags = ["nodejs_compat"]
 
 # Never log request bodies, headers, or IPs. See spec: Privacy enforcement.
 [observability]

@@ -13,6 +13,11 @@ const schemaSql = readFileSync('./schema.sql', 'utf8');
 // as a binding too.
 const workerSrc = readFileSync('./src/index.js', 'utf8');
 
+// Same story for wrangler.toml: a config test asserts observability stays
+// disabled, so the raw file is handed in as a binding rather than trusting
+// the sandbox to read it off disk.
+const wranglerToml = readFileSync('./wrangler.toml', 'utf8');
+
 export default defineWorkersConfig({
   test: {
     poolOptions: {
@@ -23,6 +28,7 @@ export default defineWorkersConfig({
           bindings: {
             TEST_SCHEMA_SQL: schemaSql,
             TEST_WORKER_SRC: workerSrc,
+            TEST_WRANGLER_TOML: wranglerToml,
             // Mutating env.STATS_TOKEN inside a test's beforeAll does not
             // propagate to the isolated Worker runtime with the installed
             // vitest-pool-workers version, so the test token is injected

@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:test';
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { purge } from '../src/index.js';
+import worker from '../src/index.js';
 
 const OLD_ID = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
 const NEW_ID = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
@@ -63,5 +64,33 @@ describe('retention', () => {
       .prepare(`SELECT count FROM country_counts WHERE country='ZA' AND month='2024-01'`)
       .first();
     expect(row.count).toBe(5);
+  });
+});
+
+describe('scheduled() error propagation', () => {
+  afterEach(async () => {
+    // Restore the table dropped below so later tests' beforeEach (which
+    // deletes from `pings`) still has a table to operate on.
+    const createPings = env.TEST_SCHEMA_SQL
+      .split(';')
+      .map(s => s.trim())
+      .find(s => /CREATE TABLE.*\bpings\b/i.test(s));
+    await env.TELEMETRY_DB.prepare(createPings).run();
+  });
+
+  it('rejects when purge() fails, instead of silently swallowing the error', async () => {
+    // A genuine D1 failure (missing table), not a mock, so the cron
+    // scheduled() handler must actually await purge() rather than fire it
+    // under ctx.waitUntil() and return success regardless.
+    await env.TELEMETRY_DB.prepare('DROP TABLE pings').run();
+
+    const waited = [];
+    const ctx = { waitUntil: (p) => waited.push(p) };
+
+    await expect(worker.scheduled({}, env, ctx)).rejects.toThrow();
+    // The same failing promise must also have been handed to waitUntil, so
+    // the runtime doesn't tear the worker down before it settles.
+    expect(waited).toHaveLength(1);
+    await expect(waited[0]).rejects.toThrow();
   });
 });

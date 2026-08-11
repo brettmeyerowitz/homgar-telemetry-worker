@@ -36,7 +36,13 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(purge(env));
+    // Await directly so a purge failure rejects the scheduled() invocation
+    // itself and the cron run is marked failed (observability is off, so
+    // this is the only signal we get). ctx.waitUntil is kept on the same
+    // promise so the runtime doesn't tear down the worker before it settles.
+    const task = purge(env);
+    ctx.waitUntil(task);
+    await task;
   },
 };
 
@@ -57,15 +63,29 @@ export async function purge(env, now = new Date()) {
   ]);
 }
 
+const MAX_PING_BODY_BYTES = 8192;
+
 async function handlePing(request, env) {
   if (request.method !== 'POST') {
     return new Response('Method Not Allowed', { status: 405 });
+  }
+
+  // Reject oversized bodies before request.json() ever parses them, so a
+  // hostile payload (e.g. a 200,000-element models array) can't burn CPU
+  // parsing/allocating before the later slice(0, 50) bounds it.
+  const contentLength = Number(request.headers.get('Content-Length'));
+  if (Number.isFinite(contentLength) && contentLength > MAX_PING_BODY_BYTES) {
+    return new Response('Payload Too Large', { status: 413 });
   }
 
   let body;
   try {
     body = await request.json();
   } catch {
+    return new Response('Bad Request', { status: 400 });
+  }
+
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return new Response('Bad Request', { status: 400 });
   }
 
@@ -98,65 +118,108 @@ async function handlePing(request, env) {
 
   const month = day.slice(0, 7);
 
-  // Atomically claim this month for this install. The UPDATE only matches when
-  // the month has not been claimed, so meta.changes === 1 means we won and are
-  // the one caller allowed to increment the aggregates. This avoids the
-  // read-then-write race a SELECT-based check would have.
-  const claim = await env.TELEMETRY_DB.prepare(
-    `UPDATE installs SET last_counted_month = ?2
-      WHERE anon_id = ?1
-        AND (last_counted_month IS NULL OR last_counted_month <> ?2)`
-  ).bind(anonId, month).run();
+  // Only claim the month when this ping actually opts into sharing something
+  // aggregatable. If we claimed unconditionally, an install that pings with
+  // sharing off would burn its one claim per month and could never be
+  // counted once it later turns sharing on within that same month.
+  if (body.share_country === true || body.share_models === true) {
+    // Read the pre-claim value so a failed aggregate write below can restore
+    // it, rather than leaving this install permanently unable to be counted
+    // for this month.
+    const previous = await env.TELEMETRY_DB
+      .prepare(`SELECT last_counted_month FROM installs WHERE anon_id = ?1`)
+      .bind(anonId)
+      .first();
+    const previousMonth = previous ? previous.last_counted_month : null;
 
-  if (claim.meta.changes === 1) {
-    const aggregates = [];
+    // Atomically claim this month for this install. The UPDATE only matches
+    // when the month has not been claimed, so meta.changes === 1 means we
+    // won and are the one caller allowed to increment the aggregates. This
+    // avoids the read-then-write race a SELECT-based check would have.
+    const claim = await env.TELEMETRY_DB.prepare(
+      `UPDATE installs SET last_counted_month = ?2
+        WHERE anon_id = ?1
+          AND (last_counted_month IS NULL OR last_counted_month <> ?2)`
+    ).bind(anonId, month).run();
 
-    if (body.share_country === true) {
-      // The ONLY read of request.cf in this file.
-      const country = request.cf?.country ?? null;
-      if (country) {
-        aggregates.push(
-          env.TELEMETRY_DB.prepare(
-            `INSERT INTO country_counts (country, month, count) VALUES (?1, ?2, 1)
-             ON CONFLICT(country, month) DO UPDATE SET count = count + 1`
-          ).bind(String(country).slice(0, 2), month)
-        );
+    if (claim.meta.changes === 1) {
+      const aggregates = [];
+
+      if (body.share_country === true) {
+        // The ONLY read of request.cf in this file.
+        const country = request.cf?.country ?? null;
+        if (country) {
+          aggregates.push(
+            env.TELEMETRY_DB.prepare(
+              `INSERT INTO country_counts (country, month, count) VALUES (?1, ?2, 1)
+               ON CONFLICT(country, month) DO UPDATE SET count = count + 1`
+            ).bind(String(country).slice(0, 2), month)
+          );
+        }
+      }
+
+      if (body.share_models === true && Array.isArray(body.models)) {
+        const models = [...new Set(
+          body.models
+            .slice(0, 50)                       // bound a hostile payload before any processing
+            .filter(m => typeof m === 'string')
+            .map(m => m.slice(0, 64))
+            .filter(m => m.length > 0)
+        )];
+        for (const model of models) {
+          aggregates.push(
+            env.TELEMETRY_DB.prepare(
+              `INSERT INTO model_counts (model, month, count) VALUES (?1, ?2, 1)
+               ON CONFLICT(model, month) DO UPDATE SET count = count + 1`
+            ).bind(model, month)
+          );
+        }
+      }
+
+      if (aggregates.length) {
+        try {
+          await env.TELEMETRY_DB.batch(aggregates);
+        } catch {
+          // The claim already committed but the aggregate writes did not.
+          // Restore the pre-claim value so this install is not permanently
+          // locked out of being counted for this month.
+          await env.TELEMETRY_DB
+            .prepare(`UPDATE installs SET last_counted_month = ?2 WHERE anon_id = ?1`)
+            .bind(anonId, previousMonth)
+            .run();
+          return new Response('Internal Server Error', { status: 500 });
+        }
       }
     }
-
-    if (body.share_models === true && Array.isArray(body.models)) {
-      const models = [...new Set(body.models.filter(m => typeof m === 'string'))]
-        .slice(0, 50)                       // bound a hostile payload
-        .map(m => m.slice(0, 64));
-      for (const model of models) {
-        aggregates.push(
-          env.TELEMETRY_DB.prepare(
-            `INSERT INTO model_counts (model, month, count) VALUES (?1, ?2, 1)
-             ON CONFLICT(model, month) DO UPDATE SET count = count + 1`
-          ).bind(model, month)
-        );
-      }
-    }
-
-    if (aggregates.length) await env.TELEMETRY_DB.batch(aggregates);
   }
 
   return new Response(null, { status: 204 });
 }
 
-/** Constant-time string compare, so token checking does not leak length/prefix. */
-function safeEqual(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) {
-    return false;
-  }
+/**
+ * Constant-time string compare. Comparing SHA-256 digests (rather than the
+ * raw strings) means the comparison always walks a fixed 32-byte buffer, so
+ * there's no early-return-on-length-mismatch to leak the token's length via
+ * timing, the way a direct char-by-char compare would.
+ */
+async function safeEqual(a, b) {
+  const enc = new TextEncoder();
+  const [digestA, digestB] = await Promise.all([
+    crypto.subtle.digest('SHA-256', enc.encode(a ?? '')),
+    crypto.subtle.digest('SHA-256', enc.encode(b ?? '')),
+  ]);
+  const bytesA = new Uint8Array(digestA);
+  const bytesB = new Uint8Array(digestB);
   let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  for (let i = 0; i < bytesA.length; i++) diff |= bytesA[i] ^ bytesB[i];
   return diff === 0;
 }
 
 async function handleStats(request, env) {
-  const provided = (request.headers.get('Authorization') || '').replace(/^Bearer /, '');
-  if (!env.STATS_TOKEN || !safeEqual(provided, env.STATS_TOKEN)) {
+  // Match the "Bearer" scheme case-insensitively (RFC 7235 scheme tokens are
+  // case-insensitive); only the token itself is compared with safeEqual.
+  const provided = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
+  if (!env.STATS_TOKEN || !(await safeEqual(provided, env.STATS_TOKEN))) {
     return new Response('Unauthorized', { status: 401 });
   }
 
@@ -171,7 +234,7 @@ async function handleStats(request, env) {
          FROM pings WHERE day >= ?1 GROUP BY day ORDER BY day`
     ).bind(since),
     env.TELEMETRY_DB.prepare(
-      `SELECT integration_version, hass_version, COUNT(*) AS installs
+      `SELECT integration_version, hass_version, COUNT(DISTINCT anon_id) AS installs
          FROM pings WHERE day >= ?1
         GROUP BY integration_version, hass_version
         ORDER BY installs DESC`
