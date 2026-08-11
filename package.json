@@ -1,0 +1,20 @@
+{
+  "name": "homgar-telemetry-worker",
+  "version": "1.0.0",
+  "description": "Opt-in anonymous telemetry for the HomGar/RainPoint Home Assistant integration",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "author": "Brett Meyerowitz",
+  "license": "MIT",
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.5.0",
+    "vitest": "~2.0.0",
+    "wrangler": "^4.78.0"
+  }
+}
