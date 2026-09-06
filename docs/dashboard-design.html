@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Telemetry — HomGar / RainPoint integration</title>
+<!--
+  ============================================================================
+  PORTING NOTES
+  ----------------------------------------------------------------------------
+  * No JS, no external requests, no webfonts. Single inline style block.
+  * No backticks and no dollar-brace sequences anywhere, so this drops straight
+    into a JS template string.
+  * TEMPLATE TOKENS: every dynamic value is followed by its token inside an
+    HTML comment placed directly after the rendered literal, of the form
+    {{TOTAL_INSTALLS}}. Swap the literal at port time; the literals present are
+    the 2026-09-06 snapshot, so the file renders standalone as a layout
+    reference.
+  * REPEATED BLOCKS are fenced with LOOP START / LOOP END comments and state
+    the geometry formula for the row. Generate rows in a loop server-side.
+  * CHART MATHS is stated in a comment above each SVG. Nothing is transformed;
+    every coordinate is an absolute number in the SVG user space.
+  ============================================================================
+-->
+<style>
+:root{
+  --bg:#f4f7f9; --panel:#ffffff; --panel-2:#fafcfd;
+  --ink:#0c1a24; --ink-2:#26404f; --muted:#4c626f;
+  --line:#dae3e8; --grid:#e6edf1;
+  --accent:#0b7fa3; --accent-ink:#065a75; --accent-soft:#dcf0f7;
+  --bar:#0b7fa3; --bar-2:#7fb3c6; --warn:#8a5a12; --warn-soft:#fdf3e0;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0a1015; --panel:#121b22; --panel-2:#0f171d;
+    --ink:#e9f1f5; --ink-2:#c3d3dc; --muted:#94a8b4;
+    --line:#213039; --grid:#1b272f;
+    --accent:#3fc0e2; --accent-ink:#7ad6ef; --accent-soft:#132a34;
+    --bar:#3fc0e2; --bar-2:#2c6a7f; --warn:#e0b063; --warn-soft:#251d0e;
+  }
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-size:15px; line-height:1.5; overflow-x:hidden;
+  font-variant-numeric:tabular-nums; font-feature-settings:"tnum" 1;
+}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.wrap{max-width:1280px; margin:0 auto; padding:28px 20px 64px}
+@media (max-width:520px){ .wrap{padding:20px 14px 48px} }
+
+/* ---- header ---- */
+.head{display:flex; flex-wrap:wrap; gap:16px 32px; align-items:flex-end; justify-content:space-between; padding-bottom:18px; border-bottom:1px solid var(--line)}
+h1{margin:0; font-size:21px; letter-spacing:-.01em; font-weight:650}
+.sub{margin:5px 0 0; color:var(--muted); font-size:13.5px; max-width:58ch}
+.stamp{color:var(--muted); font-size:12px; text-align:right; line-height:1.7}
+.stamp b{color:var(--ink-2); font-weight:600}
+@media (max-width:640px){ .stamp{text-align:left} }
+
+/* ---- opt-in notice: above the fold, not a footer ---- */
+.notice{
+  display:flex; gap:12px; align-items:baseline; margin:18px 0 26px;
+  padding:12px 14px; background:var(--accent-soft); border:1px solid var(--line);
+  border-radius:4px; font-size:13.5px; color:var(--ink-2);
+}
+.notice .tag{
+  flex:0 0 auto; font-size:10.5px; letter-spacing:.09em; text-transform:uppercase;
+  font-weight:700; color:var(--accent-ink);
+}
+.notice p{margin:0}
+.notice strong{color:var(--ink)}
+
+/* ---- tiles ---- */
+.tiles{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px}
+@media (min-width:900px){ .tiles{grid-template-columns:repeat(7,minmax(0,1fr))} }
+.tile{background:var(--panel); border:1px solid var(--line); border-radius:4px; padding:13px 14px 15px}
+.t-lab{font-size:10.5px; white-space:nowrap; letter-spacing:.085em; text-transform:uppercase; color:var(--muted); font-weight:650}
+.t-val{margin-top:7px; font-size:25px; line-height:1.05; font-weight:600; letter-spacing:-.02em}
+.t-val.sm{font-size:13.5px; padding-top:11px; letter-spacing:0; white-space:nowrap}
+.t-note{margin-top:4px; font-size:11.5px; color:var(--muted)}
+
+/* ---- sections / cards ---- */
+section{margin-top:34px}
+.sec-head{display:flex; flex-wrap:wrap; gap:4px 18px; align-items:baseline; margin-bottom:10px}
+h2{margin:0; font-size:14px; font-weight:650; letter-spacing:.005em}
+.sec-head .meta{font-size:12px; color:var(--muted)}
+.card{background:var(--panel); border:1px solid var(--line); border-radius:4px}
+.card-pad{padding:14px 4px 10px}
+.scroll{overflow-x:auto; -webkit-overflow-scrolling:touch}
+.scroll svg{display:block}
+.foot-note{margin:9px 2px 0; font-size:12px; color:var(--muted); max-width:76ch}
+.foot-note code{font-size:11.5px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+/* two-up grid for the ranked charts */
+.cols{display:grid; grid-template-columns:repeat(auto-fit,minmax(330px,1fr)); gap:26px}
+
+/* ---- svg text ---- */
+svg text{fill:var(--ink-2)}
+.ax{fill:var(--muted); font-size:11px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.lb{font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.vl{font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; fill:var(--ink)}
+.ann{fill:var(--muted); font-size:11px; font-weight:600}
+.grid-l{stroke:var(--grid); stroke-width:1}
+.axis-l{stroke:var(--line); stroke-width:1}
+.ln{fill:none; stroke:var(--accent); stroke-width:2; stroke-linejoin:round; stroke-linecap:round}
+.ln-part{fill:none; stroke:var(--accent); stroke-width:2; stroke-dasharray:4 3; opacity:.75}
+.area{fill:var(--accent); opacity:.10}
+.dot{fill:var(--accent)}
+.dot-hollow{fill:var(--panel); stroke:var(--accent); stroke-width:2}
+.mark{stroke:var(--muted); stroke-width:1; stroke-dasharray:3 3}
+.part-band{fill:var(--muted); opacity:.07}
+.bar{fill:var(--bar)}
+.bar-tail{fill:var(--bar-2)}
+
+/* ---- footer ---- */
+footer{margin-top:40px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:12.5px}
+footer p{margin:0 0 6px; max-width:80ch}
+footer a{color:var(--accent-ink)}
+footer a:hover{color:var(--ink)}
+a{color:var(--accent-ink)} a:hover{color:var(--ink)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="head">
+    <div>
+      <h1>HomGar / RainPoint integration &mdash; telemetry</h1>
+      <p class="sub">Anonymous, opt-in usage reporting from the Home Assistant custom integration for HomGar and RainPoint irrigation and water devices.</p>
+    </div>
+    <div class="stamp">
+      Last updated <b class="mono">2026-09-06 14:20 UTC<!--{{LAST_UPDATED}}--></b><br>
+      Cached ~15 min &middot; collecting since <b class="mono">2026-08-12<!--{{COLLECTING_SINCE}}--></b>
+    </div>
+  </header>
+
+  <div class="notice">
+    <span class="tag">Read first</span>
+    <p><strong>Telemetry is opt-in &mdash; these numbers are a floor, not a user count.</strong>
+    Only installs that explicitly enabled reporting appear here. Country and model figures are
+    <strong>install-months</strong>: one install counted once per calendar month it reported in, with no
+    per-install identifier retained &mdash; so they are never a distinct-user figure.</p>
+  </div>
+
+  <!-- LOOP START: headline tiles — one .tile per metric -->
+  <div class="tiles">
+    <div class="tile"><div class="t-lab">Total installs</div><div class="t-val">70<!--{{TOTAL_INSTALLS}}--></div><div class="t-note">all time, opt-in</div></div>
+    <div class="tile"><div class="t-lab">Active 7d</div><div class="t-val">69<!--{{ACTIVE_7D}}--></div><div class="t-note">reported since 08-30<!--{{WINDOW_7D_START}}--></div></div>
+    <div class="tile"><div class="t-lab">Active 30d</div><div class="t-val">70<!--{{ACTIVE_30D}}--></div><div class="t-note">reported since 08-12<!--{{WINDOW_30D_START}}--></div></div>
+    <div class="tile"><div class="t-lab">New this week</div><div class="t-val">5<!--{{NEW_7D}}--></div><div class="t-note">first-seen installs</div></div>
+    <div class="tile"><div class="t-lab">Countries</div><div class="t-val">15<!--{{COUNTRIES}}--></div><div class="t-note">current month</div></div>
+    <div class="tile"><div class="t-lab">Models</div><div class="t-val">38<!--{{MODELS_DISTINCT}}--></div><div class="t-note">208<!--{{MODELS_TOTAL}}--> records</div></div>
+    <div class="tile"><div class="t-lab">Since</div><div class="t-val sm mono">2026-08-12<!--{{COLLECTING_SINCE}}--></div><div class="t-note">26<!--{{DAYS_COLLECTING}}--> days of data</div></div>
+  </div>
+  <!-- LOOP END: headline tiles -->
+
+  <!--
+    ========================================================================
+    CHART 1 — Daily active installs, 30-day window
+    Geometry (absolute, no transforms):
+      plot x: 56 .. 876      step dx = 32.8   x(i) = 56 + 32.8 * i
+      plot y: 24 (=70) .. 232 (=0)            y(v) = 232 - v * 2.9714
+      point count = 26 (i = 0..25)
+    Tokens:
+      {{DAILY_LINE_PATH}}      complete-days polyline, i = 0..24
+      {{DAILY_AREA_PATH}}      same points, closed to the baseline y=232
+      {{DAILY_PARTIAL_PATH}}   final segment, i = 24 -> 25 (dashed)
+      {{DAILY_DOTS}}           one <circle> per complete day
+      {{RELEASE_X}}            x of the telemetry-shipped release day
+      {{PARTIAL_X}}            x of the partial day (band starts here - dx/2)
+    ========================================================================
+  -->
+  <section>
+    <div class="sec-head">
+      <h2>Daily active installs</h2>
+      <span class="meta">last 30 days &middot; installs that checked in that day</span>
+    </div>
+    <div class="card card-pad">
+      <div class="scroll">
+        <svg width="920" height="272" viewBox="0 0 920 272" role="img"
+             aria-label="Line chart of daily active installs from 2026-08-12 to 2026-09-06. Flat at 2 test installs until 08-18, then rising from 34 on 08-19 when the telemetry-enabled release shipped, to 68 on 09-04 and 66 on 09-05. The final day, 09-06, is a partial day still accumulating and reads 6 so far.">
+          <title>Daily active installs, last 30 days</title>
+
+          <!-- gridlines + y axis labels: y(v) = 232 - v * 2.9714 -->
+          <line class="grid-l" x1="56" y1="24" x2="876" y2="24"></line>
+          <line class="grid-l" x1="56" y1="53.7" x2="876" y2="53.7"></line>
+          <line class="grid-l" x1="56" y1="113.1" x2="876" y2="113.1"></line>
+          <line class="grid-l" x1="56" y1="172.6" x2="876" y2="172.6"></line>
+          <line class="axis-l" x1="56" y1="232" x2="876" y2="232"></line>
+          <text class="ax" x="48" y="28" text-anchor="end">70</text>
+          <text class="ax" x="48" y="57.7" text-anchor="end">60</text>
+          <text class="ax" x="48" y="117.1" text-anchor="end">40</text>
+          <text class="ax" x="48" y="176.6" text-anchor="end">20</text>
+          <text class="ax" x="48" y="236" text-anchor="end">0</text>
+
+          <!-- partial-day band: x = PARTIAL_X - 16.4, width = 32.8 -->
+          <rect class="part-band" x="859.6" y="24" width="32.8" height="208"></rect>
+
+          <!-- release marker at 08-19 (i = 7, x = 285.6) -->
+          <line class="mark" x1="285.6" y1="24" x2="285.6" y2="232"></line>
+          <text class="ann" x="292" y="46">telemetry shipped in 3.0.44<!--{{RELEASE_LABEL}}--></text>
+
+          <!-- area fill: {{DAILY_AREA_PATH}} -->
+          <path class="area" d="M56,226.1 L88.8,226.1 L121.6,226.1 L154.4,226.1 L187.2,226.1 L220,226.1 L252.8,220.1 L285.6,131 L318.4,113.1 L351.2,92.3 L384,77.5 L416.8,68.6 L449.6,59.7 L482.4,59.7 L515.2,59.7 L548,56.7 L580.8,53.7 L613.6,47.8 L646.4,41.8 L679.2,38.9 L712,35.9 L744.8,35.9 L777.6,44.8 L810.4,29.9 L843.2,35.9 L843.2,232 L56,232 Z"></path>
+
+          <!-- complete days line: {{DAILY_LINE_PATH}} -->
+          <path class="ln" d="M56,226.1 L88.8,226.1 L121.6,226.1 L154.4,226.1 L187.2,226.1 L220,226.1 L252.8,220.1 L285.6,131 L318.4,113.1 L351.2,92.3 L384,77.5 L416.8,68.6 L449.6,59.7 L482.4,59.7 L515.2,59.7 L548,56.7 L580.8,53.7 L613.6,47.8 L646.4,41.8 L679.2,38.9 L712,35.9 L744.8,35.9 L777.6,44.8 L810.4,29.9 L843.2,35.9"></path>
+
+          <!-- partial day segment: {{DAILY_PARTIAL_PATH}} -->
+          <path class="ln-part" d="M843.2,35.9 L876,214.2"></path>
+
+          <!-- LOOP START: daily dots — one <circle> per complete day, {{DAILY_DOTS}} -->
+          <circle class="dot" cx="56" cy="226.1" r="2"></circle>
+          <circle class="dot" cx="88.8" cy="226.1" r="2"></circle>
+          <circle class="dot" cx="121.6" cy="226.1" r="2"></circle>
+          <circle class="dot" cx="154.4" cy="226.1" r="2"></circle>
+          <circle class="dot" cx="187.2" cy="226.1" r="2"></circle>
+          <circle class="dot" cx="220" cy="226.1" r="2"></circle>
+          <circle class="dot" cx="252.8" cy="220.1" r="2"></circle>
+          <circle class="dot" cx="285.6" cy="131" r="2.6"></circle>
+          <circle class="dot" cx="318.4" cy="113.1" r="2"></circle>
+          <circle class="dot" cx="351.2" cy="92.3" r="2"></circle>
+          <circle class="dot" cx="384" cy="77.5" r="2"></circle>
+          <circle class="dot" cx="416.8" cy="68.6" r="2"></circle>
+          <circle class="dot" cx="449.6" cy="59.7" r="2"></circle>
+          <circle class="dot" cx="482.4" cy="59.7" r="2"></circle>
+          <circle class="dot" cx="515.2" cy="59.7" r="2"></circle>
+          <circle class="dot" cx="548" cy="56.7" r="2"></circle>
+          <circle class="dot" cx="580.8" cy="53.7" r="2"></circle>
+          <circle class="dot" cx="613.6" cy="47.8" r="2"></circle>
+          <circle class="dot" cx="646.4" cy="41.8" r="2"></circle>
+          <circle class="dot" cx="679.2" cy="38.9" r="2"></circle>
+          <circle class="dot" cx="712" cy="35.9" r="2"></circle>
+          <circle class="dot" cx="744.8" cy="35.9" r="2"></circle>
+          <circle class="dot" cx="777.6" cy="44.8" r="2"></circle>
+          <circle class="dot" cx="810.4" cy="29.9" r="2"></circle>
+          <circle class="dot" cx="843.2" cy="35.9" r="2"></circle>
+          <!-- LOOP END: daily dots -->
+
+          <!-- partial day: hollow point + label -->
+          <circle class="dot-hollow" cx="876" cy="214.2" r="3.4"></circle>
+          <text class="ann" x="872" y="200" text-anchor="end">partial day &mdash; 6<!--{{PARTIAL_VALUE}}--> so far</text>
+
+          <!-- last complete day, called out so the partial point cannot be misread -->
+          <text class="vl" x="836" y="24" text-anchor="end">66<!--{{LAST_COMPLETE_VALUE}}--></text>
+
+          <!-- LOOP START: x axis labels — every 3rd day, x(i) = 56 + 32.8 * i -->
+          <text class="ax" x="56" y="250" text-anchor="middle">08-12</text>
+          <text class="ax" x="154.4" y="250" text-anchor="middle">08-15</text>
+          <text class="ax" x="252.8" y="250" text-anchor="middle">08-18</text>
+          <text class="ax" x="351.2" y="250" text-anchor="middle">08-21</text>
+          <text class="ax" x="449.6" y="250" text-anchor="middle">08-24</text>
+          <text class="ax" x="548" y="250" text-anchor="middle">08-27</text>
+          <text class="ax" x="646.4" y="250" text-anchor="middle">08-30</text>
+          <text class="ax" x="744.8" y="250" text-anchor="middle">09-02</text>
+          <text class="ax" x="843.2" y="250" text-anchor="middle">09-05</text>
+          <text class="ax" x="876" y="266" text-anchor="middle">09-06</text>
+          <!-- LOOP END: x axis labels -->
+        </svg>
+      </div>
+      <p class="foot-note">The step on 2026-08-19 is the release that <em>added</em> telemetry, not a growth event &mdash; the flat run of 2 before it is test installs. The right-most point is today and is still accumulating; it is drawn dashed and hollow every day by design.</p>
+    </div>
+  </section>
+
+  <div class="cols">
+
+    <!--
+      ==================================================================
+      CHART 2 — Integration version adoption
+      Row geometry: rowY = i * 26 ; bar rect y = rowY + 6, height 13
+        label text baseline = rowY + 17, anchored end at x = 96
+        bar x = 110, width = value / 59 * 380  (max value 59)
+        value text x = 556, anchor end
+      Tokens per row: {{VERSION}} {{BAR_W}} {{COUNT}}
+      ==================================================================
+    -->
+    <section style="margin-top:34px">
+      <div class="sec-head">
+        <h2>Integration version</h2>
+        <span class="meta">last 3 days &middot; distinct installs</span>
+      </div>
+      <div class="card card-pad">
+        <div class="scroll">
+          <svg width="575" height="170" viewBox="0 0 575 170" role="img"
+               aria-label="Integration version adoption over the last three days: 3.0.50 on 59 installs, 3.0.49 on 8, 3.0.47 on 2, 3.0.44 on 2, 3.0.48 on 1, 3.0.45 on 1.">
+            <title>Integration version adoption, last 3 days</title>
+            <!-- LOOP START: integration versions -->
+            <text class="lb" x="96" y="17" text-anchor="end">3.0.50<!--{{VERSION}}--></text>
+            <rect class="bar" x="110" y="6" width="380" height="13"><!--{{BAR_W}}--></rect>
+            <text class="vl" x="556" y="17" text-anchor="end">59<!--{{COUNT}}--></text>
+
+            <text class="lb" x="96" y="43" text-anchor="end">3.0.49</text>
+            <rect class="bar" x="110" y="32" width="51.5" height="13"></rect>
+            <text class="vl" x="556" y="43" text-anchor="end">8</text>
+
+            <text class="lb" x="96" y="69" text-anchor="end">3.0.47</text>
+            <rect class="bar" x="110" y="58" width="12.9" height="13"></rect>
+            <text class="vl" x="556" y="69" text-anchor="end">2</text>
+
+            <text class="lb" x="96" y="95" text-anchor="end">3.0.44</text>
+            <rect class="bar" x="110" y="84" width="12.9" height="13"></rect>
+            <text class="vl" x="556" y="95" text-anchor="end">2</text>
+
+            <text class="lb" x="96" y="121" text-anchor="end">3.0.48</text>
+            <rect class="bar" x="110" y="110" width="6.4" height="13"></rect>
+            <text class="vl" x="556" y="121" text-anchor="end">1</text>
+
+            <text class="lb" x="96" y="147" text-anchor="end">3.0.45</text>
+            <rect class="bar" x="110" y="136" width="6.4" height="13"></rect>
+            <text class="vl" x="556" y="147" text-anchor="end">1</text>
+            <!-- LOOP END: integration versions -->
+          </svg>
+        </div>
+        <p class="foot-note">These sum to 73<!--{{VERSION_SUM}}-->, above the install total, on purpose: an install that updated inside the 3-day window is counted under both the old and the new version.</p>
+      </div>
+    </section>
+
+    <!--
+      ==================================================================
+      CHART 3 — Home Assistant core versions
+      Same row geometry as chart 2; bar width = value / 59 * 380
+      Tokens per row: {{HA_VERSION}} {{BAR_W}} {{COUNT}}
+      ==================================================================
+    -->
+    <section style="margin-top:34px">
+      <div class="sec-head">
+        <h2>Home Assistant version</h2>
+        <span class="meta">last 7 days &middot; 9<!--{{HA_DISTINCT}}--> distinct</span>
+      </div>
+      <div class="card card-pad">
+        <div class="scroll">
+          <svg width="575" height="248" viewBox="0 0 575 248" role="img"
+               aria-label="Home Assistant core versions over the last seven days: 2026.8.3 on 59 installs, 2026.9.0 on 45, 2026.9.1 on 7, 2026.8.2 on 3, 2026.8.1 on 2, 2026.6.1 on 2, 2026.9.0b4 on 1, 2026.8.0 on 1, 2026.6.4 on 1.">
+            <title>Home Assistant core versions, last 7 days</title>
+            <!-- LOOP START: home assistant versions -->
+            <text class="lb" x="96" y="17" text-anchor="end">2026.8.3<!--{{HA_VERSION}}--></text>
+            <rect class="bar" x="110" y="6" width="380" height="13"><!--{{BAR_W}}--></rect>
+            <text class="vl" x="556" y="17" text-anchor="end">59<!--{{COUNT}}--></text>
+
+            <text class="lb" x="96" y="43" text-anchor="end">2026.9.0</text>
+            <rect class="bar" x="110" y="32" width="289.8" height="13"></rect>
+            <text class="vl" x="556" y="43" text-anchor="end">45</text>
+
+            <text class="lb" x="96" y="69" text-anchor="end">2026.9.1</text>
+            <rect class="bar" x="110" y="58" width="45.1" height="13"></rect>
+            <text class="vl" x="556" y="69" text-anchor="end">7</text>
+
+            <text class="lb" x="96" y="95" text-anchor="end">2026.8.2</text>
+            <rect class="bar" x="110" y="84" width="19.3" height="13"></rect>
+            <text class="vl" x="556" y="95" text-anchor="end">3</text>
+
+            <text class="lb" x="96" y="121" text-anchor="end">2026.8.1</text>
+            <rect class="bar" x="110" y="110" width="12.9" height="13"></rect>
+            <text class="vl" x="556" y="121" text-anchor="end">2</text>
+
+            <text class="lb" x="96" y="147" text-anchor="end">2026.6.1</text>
+            <rect class="bar" x="110" y="136" width="12.9" height="13"></rect>
+            <text class="vl" x="556" y="147" text-anchor="end">2</text>
+
+            <text class="lb" x="96" y="173" text-anchor="end">2026.9.0b4</text>
+            <rect class="bar" x="110" y="162" width="6.4" height="13"></rect>
+            <text class="vl" x="556" y="173" text-anchor="end">1</text>
+
+            <text class="lb" x="96" y="199" text-anchor="end">2026.8.0</text>
+            <rect class="bar" x="110" y="188" width="6.4" height="13"></rect>
+            <text class="vl" x="556" y="199" text-anchor="end">1</text>
+
+            <text class="lb" x="96" y="225" text-anchor="end">2026.6.4</text>
+            <rect class="bar" x="110" y="214" width="6.4" height="13"></rect>
+            <text class="vl" x="556" y="225" text-anchor="end">1</text>
+            <!-- LOOP END: home assistant versions -->
+          </svg>
+        </div>
+        <p class="foot-note">Counted per install over the 7-day window; an install that upgraded mid-window appears under both versions.</p>
+      </div>
+    </section>
+  </div>
+
+  <!--
+    ======================================================================
+    CHART 4 — Countries
+    Row geometry: rowY = i * 26 ; bar y = rowY + 6, height 13
+      code text baseline = rowY + 17, anchor end at x = 40
+      bar x = 54, width = value / 13 * 380   (max value 13)
+      value text x = 500, anchor end ; name text x = 520, anchor start
+    Tokens per row: {{CC}} {{COUNTRY_NAME}} {{BAR_W}} {{INSTALL_MONTHS}}
+    ======================================================================
+  -->
+  <section>
+    <div class="sec-head">
+      <h2>Countries</h2>
+      <span class="meta">current month &middot; 15<!--{{COUNTRIES}}--> countries &middot; install-months, not users</span>
+    </div>
+    <div class="card card-pad">
+      <div class="scroll">
+        <svg width="700" height="404" viewBox="0 0 700 404" role="img"
+             aria-label="Install-months by country for the current month: Germany 13, United States 12, South Africa 10, United Kingdom 8, Switzerland 5, France 4, Canada 3, Spain 2, and Malaysia, Czechia, Luxembourg, Belgium, Italy, Malta and Australia at 1 each.">
+          <title>Install-months by country, current month</title>
+          <!-- LOOP START: countries -->
+          <text class="lb" x="40" y="17" text-anchor="end">DE<!--{{CC}}--></text>
+          <rect class="bar" x="54" y="6" width="380" height="13"><!--{{BAR_W}}--></rect>
+          <text class="vl" x="500" y="17" text-anchor="end">13<!--{{INSTALL_MONTHS}}--></text>
+          <text class="ax" x="520" y="17">Germany<!--{{COUNTRY_NAME}}--></text>
+
+          <text class="lb" x="40" y="43" text-anchor="end">US</text>
+          <rect class="bar" x="54" y="32" width="350.8" height="13"></rect>
+          <text class="vl" x="500" y="43" text-anchor="end">12</text>
+          <text class="ax" x="520" y="43">United States</text>
+
+          <text class="lb" x="40" y="69" text-anchor="end">ZA</text>
+          <rect class="bar" x="54" y="58" width="292.3" height="13"></rect>
+          <text class="vl" x="500" y="69" text-anchor="end">10</text>
+          <text class="ax" x="520" y="69">South Africa</text>
+
+          <text class="lb" x="40" y="95" text-anchor="end">GB</text>
+          <rect class="bar" x="54" y="84" width="233.8" height="13"></rect>
+          <text class="vl" x="500" y="95" text-anchor="end">8</text>
+          <text class="ax" x="520" y="95">United Kingdom</text>
+
+          <text class="lb" x="40" y="121" text-anchor="end">CH</text>
+          <rect class="bar" x="54" y="110" width="146.2" height="13"></rect>
+          <text class="vl" x="500" y="121" text-anchor="end">5</text>
+          <text class="ax" x="520" y="121">Switzerland</text>
+
+          <text class="lb" x="40" y="147" text-anchor="end">FR</text>
+          <rect class="bar" x="54" y="136" width="116.9" height="13"></rect>
+          <text class="vl" x="500" y="147" text-anchor="end">4</text>
+          <text class="ax" x="520" y="147">France</text>
+
+          <text class="lb" x="40" y="173" text-anchor="end">CA</text>
+          <rect class="bar" x="54" y="162" width="87.7" height="13"></rect>
+          <text class="vl" x="500" y="173" text-anchor="end">3</text>
+          <text class="ax" x="520" y="173">Canada</text>
+
+          <text class="lb" x="40" y="199" text-anchor="end">ES</text>
+          <rect class="bar" x="54" y="188" width="58.5" height="13"></rect>
+          <text class="vl" x="500" y="199" text-anchor="end">2</text>
+          <text class="ax" x="520" y="199">Spain</text>
+
+          <text class="lb" x="40" y="225" text-anchor="end">MY</text>
+          <rect class="bar" x="54" y="214" width="29.2" height="13"></rect>
+          <text class="vl" x="500" y="225" text-anchor="end">1</text>
+          <text class="ax" x="520" y="225">Malaysia</text>
+
+          <text class="lb" x="40" y="251" text-anchor="end">CZ</text>
+          <rect class="bar" x="54" y="240" width="29.2" height="13"></rect>
+          <text class="vl" x="500" y="251" text-anchor="end">1</text>
+          <text class="ax" x="520" y="251">Czechia</text>
+
+          <text class="lb" x="40" y="277" text-anchor="end">LU</text>
+          <rect class="bar" x="54" y="266" width="29.2" height="13"></rect>
+          <text class="vl" x="500" y="277" text-anchor="end">1</text>
+          <text class="ax" x="520" y="277">Luxembourg</text>
+
+          <text class="lb" x="40" y="303" text-anchor="end">BE</text>
+          <rect class="bar" x="54" y="292" width="29.2" height="13"></rect>
+          <text class="vl" x="500" y="303" text-anchor="end">1</text>
+          <text class="ax" x="520" y="303">Belgium</text>
+
+          <text class="lb" x="40" y="329" text-anchor="end">IT</text>
+          <rect class="bar" x="54" y="318" width="29.2" height="13"></rect>
+          <text class="vl" x="500" y="329" text-anchor="end">1</text>
+          <text class="ax" x="520" y="329">Italy</text>
+
+          <text class="lb" x="40" y="355" text-anchor="end">MT</text>
+          <rect class="bar" x="54" y="344" width="29.2" height="13"></rect>
+          <text class="vl" x="500" y="355" text-anchor="end">1</text>
+          <text class="ax" x="520" y="355">Malta</text>
+
+          <text class="lb" x="40" y="381" text-anchor="end">AU</text>
+          <rect class="bar" x="54" y="370" width="29.2" height="13"></rect>
+          <text class="vl" x="500" y="381" text-anchor="end">1</text>
+          <text class="ax" x="520" y="381">Australia</text>
+          <!-- LOOP END: countries -->
+        </svg>
+      </div>
+      <p class="foot-note"><strong>Install-months:</strong> an install is counted once for each calendar month in which it reported. The aggregate country table holds no per-install identifier, so the same install in two months counts twice and these figures cannot be reduced to distinct users.</p>
+    </div>
+  </section>
+
+  <!--
+    ======================================================================
+    CHART 5 — Device models
+    Row geometry: rowY = i * 26 ; bar y = rowY + 6, height 13
+      SKU text baseline = rowY + 17, anchor start at x = 14
+      bar x = 184, width = value / MAX * 380   (MAX = top model count, 35)
+      count text x = 618, anchor end
+    Tokens per row: {{MODEL}} {{BAR_W}} {{INSTALL_MONTHS}}
+    No family/type label: SKU prefixes cross productCategory boundaries in
+    product_models.json, so any prefix-derived label can be wrong. SKUs only.
+    SVG height = ROW_COUNT * 26 + 6.
+    ======================================================================
+  -->
+  <section>
+    <div class="sec-head">
+      <h2>Device models</h2>
+      <span class="meta">current month &middot; 38<!--{{MODELS_DISTINCT}}--> distinct &middot; 208<!--{{MODELS_TOTAL}}--> install-months</span>
+    </div>
+    <div class="card card-pad">
+      <div class="scroll">
+        <svg width="640" height="370" viewBox="0 0 640 370" role="img"
+             aria-label="Device models by install-months this month: HWG023WBRF-V2 35, HCS026FRF 17, HCS012ARF 16, HCS021FRF 15, HTV145FRF 10, HTV245FRF 10, HTV405FRF 8, HWG0538WRF 8, HWG023WRF 8, HTV213FRF 7, HCS008FRF 6, HTV113FRF 6, HTV210B 5, HTP159W 5. The remaining 24 models account for 52 install-months.">
+          <title>Device models by install-months, current month</title>
+          <!-- LOOP START: device models -->
+          <text class="lb" x="14" y="17">HWG023WBRF-V2<!--{{MODEL}}--></text>
+          <rect class="bar" x="184" y="6" width="380" height="13"><!--{{BAR_W}}--></rect>
+          <text class="vl" x="618" y="17" text-anchor="end">35<!--{{INSTALL_MONTHS}}--></text>
+
+          <text class="lb" x="14" y="43">HCS026FRF</text>
+          <rect class="bar" x="184" y="32" width="184.6" height="13"></rect>
+          <text class="vl" x="618" y="43" text-anchor="end">17</text>
+
+          <text class="lb" x="14" y="69">HCS012ARF</text>
+          <rect class="bar" x="184" y="58" width="173.7" height="13"></rect>
+          <text class="vl" x="618" y="69" text-anchor="end">16</text>
+
+          <text class="lb" x="14" y="95">HCS021FRF</text>
+          <rect class="bar" x="184" y="84" width="162.9" height="13"></rect>
+          <text class="vl" x="618" y="95" text-anchor="end">15</text>
+
+          <text class="lb" x="14" y="121">HTV145FRF</text>
+          <rect class="bar" x="184" y="110" width="108.6" height="13"></rect>
+          <text class="vl" x="618" y="121" text-anchor="end">10</text>
+
+          <text class="lb" x="14" y="147">HTV245FRF</text>
+          <rect class="bar" x="184" y="136" width="108.6" height="13"></rect>
+          <text class="vl" x="618" y="147" text-anchor="end">10</text>
+
+          <text class="lb" x="14" y="173">HTV405FRF</text>
+          <rect class="bar" x="184" y="162" width="86.9" height="13"></rect>
+          <text class="vl" x="618" y="173" text-anchor="end">8</text>
+
+          <text class="lb" x="14" y="199">HWG0538WRF</text>
+          <rect class="bar" x="184" y="188" width="86.9" height="13"></rect>
+          <text class="vl" x="618" y="199" text-anchor="end">8</text>
+
+          <text class="lb" x="14" y="225">HWG023WRF</text>
+          <rect class="bar" x="184" y="214" width="86.9" height="13"></rect>
+          <text class="vl" x="618" y="225" text-anchor="end">8</text>
+
+          <text class="lb" x="14" y="251">HTV213FRF</text>
+          <rect class="bar" x="184" y="240" width="76" height="13"></rect>
+          <text class="vl" x="618" y="251" text-anchor="end">7</text>
+
+          <text class="lb" x="14" y="277">HCS008FRF</text>
+          <rect class="bar" x="184" y="266" width="65.1" height="13"></rect>
+          <text class="vl" x="618" y="277" text-anchor="end">6</text>
+
+          <text class="lb" x="14" y="303">HTV113FRF</text>
+          <rect class="bar" x="184" y="292" width="65.1" height="13"></rect>
+          <text class="vl" x="618" y="303" text-anchor="end">6</text>
+
+          <text class="lb" x="14" y="329">HTV210B</text>
+          <rect class="bar" x="184" y="318" width="54.3" height="13"></rect>
+          <text class="vl" x="618" y="329" text-anchor="end">5</text>
+
+          <text class="lb" x="14" y="355">HTP159W</text>
+          <rect class="bar" x="184" y="344" width="54.3" height="13"></rect>
+          <text class="vl" x="618" y="355" text-anchor="end">5</text>
+          <!-- LOOP END: device models -->
+        </svg>
+      </div>
+      <p class="foot-note">Tail: the other 24<!--{{MODELS_TAIL_COUNT}}--> models account for 52<!--{{MODELS_TAIL_SUM}}--> install-months, and 15<!--{{MODELS_TAIL_LOW}}--> of the 38 sit at 1&ndash;2. SKU strings are reported verbatim by the device.</p>
+    </div>
+  </section>
+
+  <footer>
+    <p><strong>Telemetry is opt-in &mdash; these numbers are a floor, not a user count.</strong> Reporting is off unless enabled during setup, so real deployment is larger than shown by an unknown margin.</p>
+    <p>Payloads carry integration version, Home Assistant version, coarse country and device model strings. No account identifiers, no device serials, no IP addresses or precise location are stored. Aggregate tables hold counts only, which is why country and model figures are install-months rather than distinct users.</p>
+    <p>Last updated <span class="mono">2026-09-06 14:20 UTC<!--{{LAST_UPDATED}}--></span> &middot; responses cached ~15 minutes, so a fresh reload may show the same figures &middot; today&rsquo;s daily point is partial until 00:00 UTC.</p>
+  </footer>
+</div>
+</body>
+</html>

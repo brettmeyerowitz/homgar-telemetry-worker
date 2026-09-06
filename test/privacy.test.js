@@ -100,6 +100,12 @@ const FORBIDDEN_CF_PROPS = [
 ];
 
 describe('source-level guard', () => {
+  // These guards are only as good as the source they are handed. A new module
+  // added under src/ must not silently escape them by never being scanned.
+  it('scans every worker source file, not just the entry point', () => {
+    expect(env.TEST_WORKER_SRC).toContain('export function renderDashboard');
+  });
+
   it('never references a forbidden cf field, in any of the ways JS can spell one', () => {
     const src = env.TEST_WORKER_SRC;
 
