@@ -30,6 +30,15 @@ Home Assistant instance name, or anything else identifying. It exists purely
 so the worker can tell "one install pinged 40 times" from "40 installs
 pinged once."
 
+**Everything it collects is published.** The aggregates are served as a public
+page at <https://homgar-telemetry-worker.funkypeople.workers.dev> — install
+counts, countries, device models, and the version spread, cached about 15
+minutes. It is generated from the same aggregate tables described in section 2
+and carries no `anon_id` anywhere in its output, so it is a direct way to check
+that this README matches what is actually stored, rather than taking the
+description on trust. Because telemetry is opt-in, every figure on it is a
+floor, not a user count.
+
 ## 2. Exactly what is stored
 
 This is the complete database schema, `schema.sql`, verbatim:
