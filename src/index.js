@@ -9,6 +9,8 @@
  *   - day/month always come from the worker clock, never from client input.
  */
 
+import { renderDashboard } from './dashboard.js';
+
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -24,6 +26,8 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     switch (url.pathname) {
+      case '/':
+        return handleDashboard(request, env, ctx);
       case '/ping':
         return handlePing(request, env);
       case '/stats':
@@ -215,6 +219,33 @@ async function safeEqual(a, b) {
   return diff === 0;
 }
 
+// Rendered dashboard, memoised per isolate. A public URL must not hit D1 once
+// per view, and Cache-Control alone does not achieve that on Workers. The
+// Cache API would be shared across requests in a colo, but it is unusable
+// under vitest-pool-workers (caches.default hangs the runner), so this uses a
+// module-level memo: same effect within an isolate, and actually testable.
+const DASHBOARD_TTL_MS = 900_000;
+let dashboardCache = null;
+
+async function handleDashboard(request, env, ctx) {
+  // Configurable so a deployment can shorten or disable it; 0 renders fresh.
+  const ttl = Number(env.DASHBOARD_CACHE_TTL_MS ?? DASHBOARD_TTL_MS);
+  const now = Date.now();
+  if (!dashboardCache || now - dashboardCache.at >= ttl) {
+    dashboardCache = { at: now, html: renderDashboard(await loadAggregates(env)) };
+  }
+  return new Response(dashboardCache.html, {
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      // Aggregates move daily, so 15 minutes is generous.
+      'cache-control': 'public, max-age=900',
+      // Public and linkable, but not accumulating search presence on its own.
+      'x-robots-tag': 'noindex',
+    },
+  });
+}
+
+
 async function handleStats(request, env) {
   // Match the "Bearer" scheme case-insensitively (RFC 7235 scheme tokens are
   // case-insensitive); only the token itself is compared with safeEqual.
@@ -223,9 +254,19 @@ async function handleStats(request, env) {
     return new Response('Unauthorized', { status: 401 });
   }
 
+  return Response.json(await loadAggregates(env));
+}
+
+
+/**
+ * The aggregate queries behind both /stats and the public dashboard.
+ * Shared so the two cannot drift: model counts are install-months (the
+ * aggregate tables carry no anon_id), and no query here selects one.
+ */
+export async function loadAggregates(env) {
   const since = isoDay(new Date(Date.now() - 30 * 86400_000));
 
-  const [active, growth, versions, countries, models] = await env.TELEMETRY_DB.batch([
+  const [active, growth, versions, countries, models, headline] = await env.TELEMETRY_DB.batch([
     env.TELEMETRY_DB.prepare(
       `SELECT COUNT(DISTINCT anon_id) AS n FROM pings WHERE day >= ?1`
     ).bind(since),
@@ -245,14 +286,30 @@ async function handleStats(request, env) {
     env.TELEMETRY_DB.prepare(
       `SELECT model, month, count FROM model_counts ORDER BY month DESC, count DESC`
     ),
+    // Headline counts. installs.last_seen / first_seen are DATES, not timestamps.
+    env.TELEMETRY_DB.prepare(
+      `SELECT COUNT(*) AS installs,
+              SUM(CASE WHEN last_seen  >= date('now','-7 day')  THEN 1 ELSE 0 END) AS active_7d,
+              SUM(CASE WHEN last_seen  >= date('now','-30 day') THEN 1 ELSE 0 END) AS active_30d,
+              SUM(CASE WHEN first_seen >= date('now','-7 day')  THEN 1 ELSE 0 END) AS new_7d,
+              MIN(first_seen) AS first_ping,
+              MAX(last_seen)  AS latest_ping
+         FROM installs`
+    ),
   ]);
 
-  // Note: no query here selects anon_id. Aggregates only.
-  return Response.json({
+  const h = headline.results[0] ?? {};
+  return {
     active_installs: active.results[0]?.n ?? 0,
     growth: growth.results,
     versions: versions.results,
     countries: countries.results,
     models: models.results,
-  });
+    installs: h.installs ?? 0,
+    active_7d: h.active_7d ?? 0,
+    active_30d: h.active_30d ?? 0,
+    new_7d: h.new_7d ?? 0,
+    first_ping: h.first_ping ?? null,
+    latest_ping: h.latest_ping ?? null,
+  };
 }

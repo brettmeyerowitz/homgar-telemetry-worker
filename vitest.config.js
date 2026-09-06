@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config';
 
 // The Workers runtime sandbox has no access to the real project filesystem
@@ -10,8 +10,14 @@ const schemaSql = readFileSync('./schema.sql', 'utf8');
 // Likewise, the privacy regression guard needs to inspect the worker's own
 // source for forbidden cf field references, but the sandbox's node:fs can't
 // reach the project tree either — so the source is read here and handed in
-// as a binding too.
-const workerSrc = readFileSync('./src/index.js', 'utf8');
+// as a binding too. EVERY file under src/ is concatenated, not just the entry
+// point: a guard that only sees index.js silently stops covering the codebase
+// the moment a second module is added.
+const workerSrc = readdirSync('./src')
+  .filter((f) => f.endsWith('.js'))
+  .sort()
+  .map((f) => readFileSync(`./src/${f}`, 'utf8'))
+  .join('\n');
 
 // Same story for wrangler.toml: a config test asserts observability stays
 // disabled, so the raw file is handed in as a binding rather than trusting
@@ -34,6 +40,9 @@ export default defineWorkersConfig({
             // vitest-pool-workers version, so the test token is injected
             // here as a real miniflare binding instead.
             STATS_TOKEN: 'test-stats-token',
+            // Render fresh in tests: the dashboard memo is per-isolate, so a
+            // non-zero TTL would leak one test's page into the next.
+            DASHBOARD_CACHE_TTL_MS: '0',
           },
         },
       },
