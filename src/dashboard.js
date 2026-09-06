@@ -183,10 +183,17 @@ function growthChart(growth) {
   );
 }
 
-const tile = (metric, label, val, note) =>
+const tile = (metric, label, val, note, cls = '') =>
   `<div class="tile"><div class="t-lab">${esc(label)}</div>` +
-  `<div class="t-val" data-metric="${metric}">${esc(val)}</div>` +
+  `<div class="t-val${cls ? ' ' + cls : ''}" data-metric="${metric}">${esc(val)}</div>` +
   `<div class="t-note">${esc(note)}</div></div>`;
+
+/** MM-DD, n days before `now` — used to state each window's start explicitly. */
+const daysAgo = (now, n) =>
+  new Date(now.getTime() - n * 86400_000).toISOString().slice(5, 10);
+
+const daysBetween = (iso, now) =>
+  iso ? Math.max(0, Math.round((now - new Date(iso + 'T00:00:00Z')) / 86400_000)) : 0;
 
 /** Latest month only — country_counts and model_counts are month-partitioned. */
 const latestMonth = (rows) => {
@@ -228,11 +235,12 @@ per-install identifier retained &mdash; so they are never a distinct-user figure
 
 <div class="tiles">
 ${tile('total_installs', 'Total installs', agg.installs, 'all time, opt-in')}
-${tile('active_7d', 'Active 7d', agg.active_7d, 'reported this week')}
-${tile('active_30d', 'Active 30d', agg.active_30d, 'reported this month')}
+${tile('active_7d', 'Active 7d', agg.active_7d, 'reported since ' + daysAgo(now, 7))}
+${tile('active_30d', 'Active 30d', agg.active_30d, 'reported since ' + daysAgo(now, 30))}
 ${tile('new_7d', 'New this week', agg.new_7d, 'first-seen installs')}
 ${tile('countries', 'Countries', countries.length, 'current month')}
-${tile('models', 'Models', models.length, esc(models.reduce((a, r) => a + r.count, 0)) + ' install-months')}
+${tile('models', 'Models', models.length, models.reduce((a, r) => a + r.count, 0) + ' install-months')}
+${tile('since', 'Since', agg.first_ping ?? 'n/a', daysBetween(agg.first_ping, now) + ' days of data', 'sm mono')}
 </div>
 
 <section><div class="sec-head"><h2>Daily active installs</h2>

@@ -69,6 +69,27 @@ describe('GET /', () => {
   });
 });
 
+describe('headline tiles', () => {
+  const sample = {
+    installs: 70, active_7d: 69, active_30d: 70, new_7d: 5,
+    first_ping: '2026-08-12', latest_ping: '2026-09-06',
+    growth: [{ day: '2026-09-05', installs: 66 }, { day: '2026-09-06', installs: 6 }],
+    versions: [], countries: [], models: [],
+  };
+
+  it('emits one tile per column the CSS grid reserves', () => {
+    const html = renderDashboard(sample);
+    const cols = Number(html.match(/repeat\((\d+),minmax\(0,1fr\)\)/)[1]);
+    const tiles = (html.match(/class="tile"/g) || []).length;
+    expect(tiles).toBe(cols);
+  });
+
+  it('shows when collection started', () => {
+    const html = renderDashboard(sample);
+    expect(html).toMatch(/data-metric="since"[^>]*>[^<]*2026-08-12/);
+  });
+});
+
 describe('growth chart axis', () => {
   const agg = (peak) => ({
     installs: peak, active_7d: peak, active_30d: peak, new_7d: 0,
