@@ -103,7 +103,7 @@ svg text{fill:var(--ink-2)}
 
 /* ---- footer ---- */
 footer{margin-top:40px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:12.5px}
-footer p{margin:0 0 6px; max-width:80ch}
+footer p{margin:0 0 8px}
 footer a{color:var(--accent-ink)}
 footer a:hover{color:var(--ink)}
 a{color:var(--accent-ink)} a:hover{color:var(--ink)}`;
