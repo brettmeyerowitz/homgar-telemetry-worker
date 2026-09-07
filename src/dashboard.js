@@ -103,7 +103,7 @@ svg text{fill:var(--ink-2)}
 
 /* ---- footer ---- */
 footer{margin-top:40px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:12.5px}
-footer p{margin:0 0 6px; max-width:80ch}
+footer p{margin:0 0 8px}
 footer a{color:var(--accent-ink)}
 footer a:hover{color:var(--ink)}
 a{color:var(--accent-ink)} a:hover{color:var(--ink)}`;
@@ -114,12 +114,12 @@ const esc = (v) =>
 const PLOT = { x0: 56, x1: 876, yTop: 24, yBase: 232 };
 
 /** Horizontal bar rows sharing the design's 26px row pitch. */
-function bars(rows, { label, value, labelX, barX, valueX, anchorEnd = true }) {
+function bars(rows, { label, value, labelX, barX, valueX, anchorEnd = true, barMax = 380 }) {
   const max = Math.max(1, ...rows.map((r) => r[value]));
   return rows
     .map((r, i) => {
       const y = i * 26;
-      const w = (r[value] / max) * 380;
+      const w = (r[value] / max) * barMax;
       const anchor = anchorEnd ? ' text-anchor="end"' : '';
       return (
         `<text class="lb" x="${labelX}" y="${y + 17}"${anchor}>${esc(r[label])}</text>` +
@@ -205,9 +205,6 @@ const latestMonth = (rows) => {
 export function renderDashboard(agg, now = new Date()) {
   const countries = latestMonth(agg.countries);
   const models = latestMonth(agg.models);
-  const shown = models.slice(0, 12);
-  const tailRows = models.length - shown.length;
-  const tailSum = models.slice(12).reduce((a, r) => a + r.count, 0);
   const versions = agg.versions ?? [];
   const integ = Object.entries(
     versions.reduce((a, v) => ((a[v.integration_version] = (a[v.integration_version] ?? 0) + v.installs), a), {})
@@ -258,15 +255,17 @@ ${tile('since', 'Since', agg.first_ping ?? 'n/a', daysBetween(agg.first_ping, no
 <p class="foot-note">An install that upgraded mid-window appears under both versions.</p></div></section>
 </div>
 
+<div class="cols">
 <section><div class="sec-head"><h2>Countries</h2>
 <span class="meta">current month &middot; ${esc(countries.length)} countries &middot; install-months, not users</span></div>
-<div class="card card-pad">${barSvg(countries, { label: 'country', value: 'count', labelX: 40, barX: 54, valueX: 500 }, 700, 'Install-months by country')}
+<div class="card card-pad">${barSvg(countries, { label: 'country', value: 'count', labelX: 34, barX: 48, valueX: 400, barMax: 300 }, 420, 'Install-months by country')}
 <p class="foot-note"><strong>Install-months:</strong> an install is counted once for each calendar month in which it reported. The aggregate table holds no per-install identifier, so these figures cannot be reduced to distinct users.</p></div></section>
 
 <section><div class="sec-head"><h2>Device models</h2>
-<span class="meta">current month &middot; ${esc(models.length)} distinct</span></div>
-<div class="card card-pad">${barSvg(shown, { label: 'model', value: 'count', labelX: 14, barX: 184, valueX: 618, anchorEnd: false }, 640, 'Device models by install-months')}
-<p class="foot-note">${tailRows > 0 ? 'Tail: the other ' + esc(tailRows) + ' models account for ' + esc(tailSum) + ' install-months. ' : ''}SKU strings are reported verbatim by the device.</p></div></section>
+<span class="meta">current month &middot; ${esc(models.length)} distinct &middot; every model, including single installs</span></div>
+<div class="card card-pad">${barSvg(models, { label: 'model', value: 'count', labelX: 14, barX: 150, valueX: 520, anchorEnd: false, barMax: 300 }, 545, 'Device models by install-months')}
+<p class="foot-note">Every model is listed, including those with a single install &mdash; a thin tail is the interesting part, since a model with one reporting install is one nobody would notice breaking. SKU strings are reported verbatim by the device.</p></div></section>
+</div>
 
 <footer>
 <p><strong>Telemetry is opt-in &mdash; these numbers are a floor, not a user count.</strong> Reporting is off unless enabled during setup, so real deployment is larger than shown by an unknown margin.</p>
